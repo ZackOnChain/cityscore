@@ -574,6 +574,28 @@ def _load_crime_csv() -> dict:
                 }
     _crime_cache = index
     print(f"  ✓ Base criminalité chargée ({len(index)} communes)")
+
+    # Compute national median + IQR per indicator for z-score normalisation
+    from collections import defaultdict
+    indic_vals: dict = defaultdict(list)
+    for _code, indics in index.items():
+        for indic, data in indics.items():
+            t = data.get("taux_pour_mille")
+            if t is not None:
+                indic_vals[indic].append(t)
+    national_stats = {}
+    for indic, vals in indic_vals.items():
+        vals_s = sorted(vals)
+        n = len(vals_s)
+        median = vals_s[n // 2]
+        q1 = vals_s[n // 4]
+        q3 = vals_s[3 * n // 4]
+        national_stats[indic] = {"median": median, "iqr": max(q3 - q1, 0.1), "n": n}
+    stats_path = OUT / "_national"
+    stats_path.mkdir(exist_ok=True)
+    with open(stats_path / "crime_stats.json", "w") as f:
+        json.dump(national_stats, f, ensure_ascii=False, indent=2)
+
     return _crime_cache
 
 

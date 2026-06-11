@@ -845,7 +845,7 @@ def load_data(commune: str) -> dict:
 def compute_cityscore(d: dict) -> dict:
     scores: dict[str, int | None] = {}
 
-    # ── Immobilier : évolution prix (50%) + prix absolu (20%) + taux HLM (30%) ──
+    # ── Immobilier : évolution (35%) + prix absolu (25%) + HLM (15%) + tension (15%) + vacance (10%) ──
     dvf = d.get("dvf") or {}
     par_type = dvf.get("par_type") or []
 
@@ -890,10 +890,34 @@ def compute_cityscore(d: dict) -> dict:
         else:
             prix_score = 20
 
+    # HLM: 0% = 100pts, ≥40% = 0pts (adouci vs v1 qui pénalisait à 30%)
     hlm_taux = d.get("hlm_taux_pct")
-    hlm_score = max(0, min(100, (30 - hlm_taux) / 30 * 100)) if hlm_taux is not None else None
+    hlm_score = max(0, min(100, (40 - hlm_taux) / 40 * 100)) if hlm_taux is not None else None
 
-    sub_immo = [(s, w) for s, w in [(evol_score, 0.5), (prix_score, 0.2), (hlm_score, 0.3)] if s is not None]
+    # Tension marché: transactions habitation / 1000 logements / an
+    logements = (d.get("logements_rp") or {}).get("residences_principales") or 0
+    total_hab_txn = sum(r.get("nb", 0) for r in par_type)
+    nb_years = max(len(yrs), 1)
+    tension_score = None
+    if logements and total_hab_txn:
+        txn_per_1000 = (total_hab_txn / nb_years) / logements * 1000
+        # <10/1000/an = 0pts, 20 = 50pts, ≥40 = 100pts
+        tension_score = max(0, min(100, (txn_per_1000 - 10) / 30 * 100))
+
+    # Vacance: logements vacants / total
+    logements_data = d.get("logements_rp") or {}
+    vacants = logements_data.get("vacants")
+    total_log = logements_data.get("total")
+    vacance_score = None
+    if vacants is not None and total_log:
+        taux_vacance = vacants / total_log * 100
+        # <5% = 100pts, ≥12% = 0pts (signe de déclin)
+        vacance_score = max(0, min(100, (12 - taux_vacance) / 7 * 100))
+
+    sub_immo = [(s, w) for s, w in [
+        (evol_score, 0.35), (prix_score, 0.25), (hlm_score, 0.15),
+        (tension_score, 0.15), (vacance_score, 0.10)
+    ] if s is not None]
     if sub_immo:
         tw = sum(w for _, w in sub_immo)
         scores["immobilier"] = round(sum(s * w for s, w in sub_immo) / tw)
@@ -949,31 +973,90 @@ def compute_cityscore(d: dict) -> dict:
     else:
         scores["education"] = None
 
-    # ── Sécurité : taux criminalité cumulé (0‰=100, 100‰=0) ─────────────────
+    # ── Sécurité : z-score par catégorie vs stats nationales ────────────────
     crimes = d.get("criminalite") or []
-    if crimes:
+    _crime_stats_path = DATA_DIR / "_national" / "crime_stats.json"
+    _national_crime = None
+    if _crime_stats_path.exists():
+        try:
+            with open(_crime_stats_path) as _f:
+                _national_crime = json.load(_f)
+        except Exception:
+            pass
+
+    # Severity weights: violence ×3, burglary ×2, theft/other ×1
+    def _crime_severity(indicateur: str) -> int:
+        low = indicateur.lower()
+        # Violent crime: starts with "violence" or contains "coups" or "sexuel"
+        # Exclude "sans violence" (which is theft, not violence)
+        if "sans violence" in low:
+            return 1
+        if low.startswith("violence") or "coups" in low or "sexuel" in low:
+            return 3
+        if "cambriolage" in low:
+            return 2
+        return 1
+
+    if crimes and _national_crime:
+        weighted_sum = 0.0
+        weighted_w = 0.0
+        for c in crimes:
+            taux = c.get("taux_pour_mille")
+            if taux is None:
+                continue
+            indic = c.get("indicateur", "")
+            stats = _national_crime.get(indic)
+            if not stats:
+                continue
+            # Use min IQR of 2.0 to avoid extreme sensitivity for near-zero categories
+            iqr = max(stats["iqr"], 2.0)
+            z = (taux - stats["median"]) / iqr
+            # z=0 (at median) → 75pts; z=1 → 50pts; z=-1 → 100pts; z=3 → 0pts
+            cat_score = max(0.0, min(100.0, 100 - (z + 1) * 25))
+            w = _crime_severity(indic)
+            weighted_sum += cat_score * w
+            weighted_w += w
+        scores["securite"] = round(weighted_sum / weighted_w) if weighted_w else None
+    elif crimes:
+        # Fallback: simple cumulative rate (0‰=100, 100‰=0)
         total_taux = sum(c.get("taux_pour_mille", 0) for c in crimes)
         scores["securite"] = round(max(0, min(100, (100 - total_taux) / 100 * 100)))
     else:
         scores["securite"] = None
 
-    # ── Services : médecins/hab + distance gare ──────────────────────────────
+    # ── Services : médecins/hab (40%) + gare (25%) + diversité soins (35%) ──
     pop = (d.get("geo") or {}).get("population") or 1
-    gen = ((d.get("medecins") or {}).get("par_type") or {}).get("Médecin généraliste", 0)
+    med_par_type = (d.get("medecins") or {}).get("par_type") or {}
+    gen = med_par_type.get("Médecin généraliste", 0)
+    # 2 généralistes / 1000 hab = 100pts
     gen_sc = min(100, gen / pop * 1000 / 2 * 100)
     gares = d.get("gares") or []
     gare_dist = gares[0].get("distance_km", 50) if gares else 50
     gare_sc = max(0, min(100, (30 - gare_dist) / 30 * 100))
-    scores["services"] = round(gen_sc * 0.6 + gare_sc * 0.4)
+    # Diversité soins: nb de types de praticiens présents parmi: dentiste, kiné, infirmier, labo
+    _SOINS_TYPES = ["Chirurgien-dentiste", "Kinésithérapeute / rééducation",
+                    "Infirmier", "Laboratoire / technicien médical"]
+    nb_soins = sum(1 for t in _SOINS_TYPES if med_par_type.get(t, 0) > 0)
+    soins_sc = nb_soins / len(_SOINS_TYPES) * 100
+    scores["services"] = round(gen_sc * 0.40 + gare_sc * 0.25 + soins_sc * 0.35)
 
-    # ── Cadre de vie : air + fibre + risques ────────────────────────────────
+    # ── Cadre de vie : air + fibre + risques pondérés ───────────────────────
     sub = []
     eaqi = (d.get("qualite_air") or {}).get("eaqi")
     if eaqi:
         sub.append(max(0, min(100, (6 - eaqi) / 5 * 100)))
     sub.append((d.get("fibre") or {}).get("pct_thd1g") or 0)
-    nb_risques = len(d.get("risques") or [])
-    sub.append(max(0, min(100, (20 - nb_risques) / 20 * 100)))
+    # Risques pondérés par gravité: inondation/Seveso ×3, séisme ×2, autres ×1
+    _RISQUE_POIDS = {3: ["inondation", "seveso", "industriel", "nucléaire", "crue"],
+                     2: ["séisme", "mouvement de terrain", "glissement"]}
+    risques = d.get("risques") or []
+    risque_weighted = 0.0
+    for r in risques:
+        rl = r.lower()
+        w = next((p for p, kws in _RISQUE_POIDS.items() if any(k in rl for k in kws)), 1)
+        risque_weighted += w
+    # 0 poids = 100pts; 30 poids équivalent (≈10 risques graves) = 0pts
+    sub.append(max(0, min(100, (30 - risque_weighted) / 30 * 100)))
     scores["cadre_vie"] = round(sum(sub) / len(sub)) if sub else None
 
     # ── Score global pondéré ─────────────────────────────────────────────────
