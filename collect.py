@@ -434,28 +434,37 @@ _NAF_SANTE = {
 
 
 def fetch_medecins(name: str, info: dict):
-    """Professionnels de santé libéraux par commune (SIRENE section Q)."""
-    data = get(
-        "https://recherche-entreprises.api.gouv.fr/search",
-        params={
-            "code_commune": info["code"],
-            "section_activite_principale": "Q",
-            "per_page": 25,
-        },
-    )
-    if not data:
-        return
+    """Professionnels de santé libéraux par commune (SIRENE section Q) — paginé."""
     counts: dict[str, int] = {}
     noms_generalistes: list[str] = []
-    for e in data.get("results", []):
-        naf = e.get("activite_principale", "")
-        label = _NAF_SANTE.get(naf)
-        if label:
-            counts[label] = counts.get(label, 0) + 1
-            if naf == "86.21Z":
-                nom = e.get("nom_complet") or e.get("nom_raison_sociale", "")
-                if nom:
-                    noms_generalistes.append(nom.title())
+    page = 1
+    while True:
+        data = get(
+            "https://recherche-entreprises.api.gouv.fr/search",
+            params={
+                "code_commune": info["code"],
+                "section_activite_principale": "Q",
+                "per_page": 25,
+                "page": page,
+            },
+        )
+        if not data:
+            break
+        results = data.get("results", [])
+        for e in results:
+            naf = e.get("activite_principale", "")
+            label = _NAF_SANTE.get(naf)
+            if label:
+                counts[label] = counts.get(label, 0) + 1
+                if naf == "86.21Z":
+                    nom = e.get("nom_complet") or e.get("nom_raison_sociale", "")
+                    if nom:
+                        noms_generalistes.append(nom.title())
+        total = data.get("total_results", 0)
+        if page * 25 >= total or not results:
+            break
+        page += 1
+        time.sleep(0.3)
     save(name, "medecins", {
         "par_type": counts,
         "total": sum(counts.values()),

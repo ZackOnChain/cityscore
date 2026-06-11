@@ -488,7 +488,7 @@ TEMPLATE = """<!DOCTYPE html>
         {% endfor %}
       </div>
       {% if d.medecins.generalistes_noms %}
-      <div style="font-size:0.72rem;color:#666;margin-top:6px">Généralistes : {{ d.medecins.generalistes_noms | join(', ') }}</div>
+      <div style="font-size:0.72rem;color:#666;margin-top:6px">Généralistes : {{ d.medecins.generalistes_noms[:5] | join(', ') }}{% if d.medecins.generalistes_noms|length > 5 %} <em>+{{ d.medecins.generalistes_noms|length - 5 }} autres</em>{% endif %}</div>
       {% endif %}
       {% endif %}
       {% if d.commerces %}
