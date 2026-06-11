@@ -1107,11 +1107,21 @@ def index():
 
 @app.route("/commune/<slug>")
 def commune_page(slug: str):
+    from flask import request as _req
+    force_refresh = _req.args.get("refresh") == "1"
     commune_name = find_commune_dir(slug)
 
-    if commune_name and data_is_fresh(commune_name):
+    if commune_name and data_is_fresh(commune_name) and not force_refresh:
         data = {commune_name: load_data(commune_name)}
         return render_template_string(TEMPLATE, communes=[commune_name], data=data, now=datetime.now().strftime("%d/%m/%Y %H:%M"))
+
+    # Force refresh: delete metadata so start_collection triggers re-collect
+    if force_refresh and commune_name:
+        meta = DATA_DIR / commune_name / "metadata.json"
+        if meta.exists():
+            meta.unlink()
+        with _jobs_lock:
+            _jobs.pop(slug, None)
 
     # Data missing or stale — need collection
     if not commune_name:
