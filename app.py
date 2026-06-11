@@ -308,6 +308,22 @@ TEMPLATE = """<!DOCTYPE html>
   .chip { background: #f0f4ff; color: #333; border-radius: 6px; padding: 3px 9px; font-size: 0.75rem; display: flex; align-items: center; gap: 4px; }
   .chip .num { font-weight: 700; color: #0f3460; }
   footer { text-align: center; padding: 20px; color: #aaa; font-size: 0.8rem; }
+  /* CityScore */
+  .score-banner { padding: 14px 18px 10px; border-bottom: 1px solid #f0f0f0; background: #fafbff; }
+  .score-global-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .score-circle { width: 52px; height: 52px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; }
+  .score-circle .num { font-size: 1.2rem; font-weight: 800; line-height: 1; }
+  .score-circle .lbl { font-size: 0.55rem; font-weight: 600; text-transform: uppercase; opacity: 0.85; }
+  .score-green { background: #d4edda; color: #155724; }
+  .score-orange { background: #fff3cd; color: #856404; }
+  .score-red { background: #f8d7da; color: #721c24; }
+  .score-dims { display: flex; flex-direction: column; gap: 5px; }
+  .score-dim { display: flex; align-items: center; gap: 6px; font-size: 0.74rem; }
+  .score-dim-icon { width: 16px; text-align: center; flex-shrink: 0; }
+  .score-dim-label { width: 78px; color: #555; flex-shrink: 0; }
+  .score-bar-bg { flex: 1; height: 6px; background: #e9ecef; border-radius: 3px; overflow: hidden; }
+  .score-bar-fill { height: 100%; border-radius: 3px; }
+  .score-dim-val { width: 26px; text-align: right; font-weight: 700; color: #333; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -327,6 +343,34 @@ TEMPLATE = """<!DOCTYPE html>
     <div class="sub">INSEE {{ d.geo.code }} · CP {{ d.geo.codesPostaux[0] if d.geo.codesPostaux else '' }} · {{ d.geo.region.nom if d.geo.region else '' }}</div>
   </div>
   <div class="card-body">
+
+  <!-- ══ CITYSCORE ══ -->
+  {% if d.cityscore and d.cityscore.global is not none %}
+  {% set gs = d.cityscore.global %}
+  <div class="score-banner">
+    <div class="score-global-row">
+      <div class="score-circle {{ 'score-green' if gs >= 67 else ('score-orange' if gs >= 34 else 'score-red') }}">
+        <span class="num">{{ gs }}</span><span class="lbl">score</span>
+      </div>
+      <div style="flex:1">
+        <div style="font-size:0.72rem;font-weight:700;color:#333;margin-bottom:6px">CityScore</div>
+        <div class="score-dims">
+          {% for key, icon, label in [('immobilier','🏠','Immobilier'),('education','🎓','Éducation'),('securite','🛡','Sécurité'),('services','🏥','Services'),('cadre_vie','🌿','Cadre de vie')] %}
+          {% set v = d.cityscore[key] %}
+          {% if v is not none %}
+          <div class="score-dim">
+            <span class="score-dim-icon">{{ icon }}</span>
+            <span class="score-dim-label">{{ label }}</span>
+            <div class="score-bar-bg"><div class="score-bar-fill" style="width:{{ v }}%;background:{{ '#6bcb77' if v >= 67 else ('#ffd93d' if v >= 34 else '#ff6b6b') }}"></div></div>
+            <span class="score-dim-val">{{ v }}</span>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ══ 1. GÉOGRAPHIE & ACCÈS ══ -->
   <div class="cat">
@@ -794,7 +838,79 @@ def load_data(commune: str) -> dict:
     else:
         out["hlm_taux_pct"] = None
 
+    out["cityscore"] = compute_cityscore(out)
     return out
+
+
+def compute_cityscore(d: dict) -> dict:
+    scores: dict[str, int | None] = {}
+
+    # ── Immobilier : affordabilité (1 500 €/m²=100, 7 000 €/m²=0) ──────────
+    median_m2 = (d.get("dvf") or {}).get("global_median_m2")
+    if median_m2 and median_m2 > 0:
+        scores["immobilier"] = round(max(0, min(100, (7000 - median_m2) / (7000 - 1500) * 100)))
+    else:
+        scores["immobilier"] = None
+
+    # ── Éducation : IPS moyen + taux DNB ────────────────────────────────────
+    schools = (d.get("schools_in") or []) + (d.get("schools_out") or [])
+    ips_vals = [s["ips"] for s in schools if s.get("ips")]
+    def _parse_pct(v):
+        try:
+            return float(str(v).replace("%", "").replace(",", "."))
+        except Exception:
+            return None
+    dnb_raw = [_parse_pct(s["dnb"]["taux"]) for s in schools if s.get("dnb") and (s["dnb"] or {}).get("taux")]
+    dnb_vals = [v for v in dnb_raw if v is not None]
+    ips_sc = max(0, min(100, (sum(ips_vals) / len(ips_vals) - 50) / 120 * 100)) if ips_vals else None
+    dnb_sc = max(0, min(100, (sum(dnb_vals) / len(dnb_vals) - 50) / 50 * 100)) if dnb_vals else None
+    if ips_sc is not None and dnb_sc is not None:
+        scores["education"] = round(ips_sc * 0.6 + dnb_sc * 0.4)
+    elif ips_sc is not None:
+        scores["education"] = round(ips_sc)
+    elif dnb_sc is not None:
+        scores["education"] = round(dnb_sc)
+    else:
+        scores["education"] = None
+
+    # ── Sécurité : taux criminalité cumulé (0‰=100, 100‰=0) ─────────────────
+    crimes = d.get("criminalite") or []
+    if crimes:
+        total_taux = sum(c.get("taux_pour_mille", 0) for c in crimes)
+        scores["securite"] = round(max(0, min(100, (100 - total_taux) / 100 * 100)))
+    else:
+        scores["securite"] = None
+
+    # ── Services : médecins/hab + distance gare ──────────────────────────────
+    pop = (d.get("geo") or {}).get("population") or 1
+    gen = ((d.get("medecins") or {}).get("par_type") or {}).get("Médecin généraliste", 0)
+    gen_sc = min(100, gen / pop * 1000 / 2 * 100)
+    gares = d.get("gares") or []
+    gare_dist = gares[0].get("distance_km", 50) if gares else 50
+    gare_sc = max(0, min(100, (30 - gare_dist) / 30 * 100))
+    scores["services"] = round(gen_sc * 0.6 + gare_sc * 0.4)
+
+    # ── Cadre de vie : air + fibre + risques ────────────────────────────────
+    sub = []
+    eaqi = (d.get("qualite_air") or {}).get("eaqi")
+    if eaqi:
+        sub.append(max(0, min(100, (6 - eaqi) / 5 * 100)))
+    sub.append((d.get("fibre") or {}).get("pct_thd1g") or 0)
+    nb_risques = len(d.get("risques") or [])
+    sub.append(max(0, min(100, (20 - nb_risques) / 20 * 100)))
+    scores["cadre_vie"] = round(sum(sub) / len(sub)) if sub else None
+
+    # ── Score global pondéré ─────────────────────────────────────────────────
+    weights = {"immobilier": 0.25, "education": 0.25, "securite": 0.20,
+               "services": 0.15, "cadre_vie": 0.15}
+    valid = [(k, v) for k, v in scores.items() if v is not None]
+    if valid:
+        tw = sum(weights[k] for k, _ in valid)
+        scores["global"] = round(sum(weights[k] * v for k, v in valid) / tw)
+    else:
+        scores["global"] = None
+
+    return scores
 
 
 @app.route("/")
