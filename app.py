@@ -845,10 +845,58 @@ def load_data(commune: str) -> dict:
 def compute_cityscore(d: dict) -> dict:
     scores: dict[str, int | None] = {}
 
-    # ── Immobilier : affordabilité (1 500 €/m²=100, 7 000 €/m²=0) ──────────
-    median_m2 = (d.get("dvf") or {}).get("global_median_m2")
-    if median_m2 and median_m2 > 0:
-        scores["immobilier"] = round(max(0, min(100, (7000 - median_m2) / (7000 - 1500) * 100)))
+    # ── Immobilier : évolution prix (50%) + prix absolu (20%) + taux HLM (30%) ──
+    dvf = d.get("dvf") or {}
+    par_type = dvf.get("par_type") or []
+
+    # Weighted average price per year across all transaction types
+    year_data: dict[int, list] = {}
+    for row in par_type:
+        y, p, n = row.get("annee"), row.get("prix_m2_median"), row.get("nb", 0)
+        if y and p and n:
+            year_data.setdefault(y, []).append((p, n))
+
+    def _wavg(items):
+        tw = sum(n for _, n in items)
+        return sum(p * n for p, n in items) / tw if tw else None
+
+    yrs = sorted(year_data)
+    evol_score = None
+    if len(yrs) >= 2:
+        p_old = _wavg(year_data[yrs[0]])
+        p_new = _wavg(year_data[yrs[-1]])
+        if p_old and p_new:
+            ep = (p_new - p_old) / p_old * 100  # evolution %
+            if 5 <= ep <= 20:
+                evol_score = 100
+            elif ep > 20:
+                evol_score = max(40, 100 - (ep - 20) * 3)   # penalise excessive rise
+            elif ep >= 0:
+                evol_score = 60 + ep / 5 * 40               # stable → 60-100
+            else:
+                evol_score = max(0, 60 + ep * 4)            # decline → 0-60
+
+    median_m2 = dvf.get("global_median_m2")
+    prix_score = None
+    if median_m2:
+        if median_m2 < 1500:
+            prix_score = 20
+        elif median_m2 <= 3000:
+            prix_score = 60 + (median_m2 - 1500) / 1500 * 40
+        elif median_m2 <= 5000:
+            prix_score = 100
+        elif median_m2 <= 7000:
+            prix_score = max(40, 100 - (median_m2 - 5000) / 2000 * 60)
+        else:
+            prix_score = 20
+
+    hlm_taux = d.get("hlm_taux_pct")
+    hlm_score = max(0, min(100, (30 - hlm_taux) / 30 * 100)) if hlm_taux is not None else None
+
+    sub_immo = [(s, w) for s, w in [(evol_score, 0.5), (prix_score, 0.2), (hlm_score, 0.3)] if s is not None]
+    if sub_immo:
+        tw = sum(w for _, w in sub_immo)
+        scores["immobilier"] = round(sum(s * w for s, w in sub_immo) / tw)
     else:
         scores["immobilier"] = None
 
