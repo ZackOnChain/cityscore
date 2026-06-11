@@ -224,7 +224,7 @@ setInterval(() => {
   fetch('/api/status/{{ slug }}')
     .then(r => r.json())
     .then(d => {
-      if (d.status === 'done') window.location.reload();
+      if (d.status === 'done') window.location.href = '/commune/{{ slug }}';
       if (d.status === 'error') document.querySelector('p').textContent = 'Une erreur est survenue lors de la collecte.';
     });
 }, 3000);
