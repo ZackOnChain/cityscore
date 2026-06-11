@@ -330,10 +330,10 @@ TEMPLATE = """<!DOCTYPE html>
 
   <!-- ══ 1. GÉOGRAPHIE & ACCÈS ══ -->
   <div class="cat">
-    <div class="cat-header open" onclick="toggle(this)">
+    <div class="cat-header" onclick="toggle(this)">
       <span class="cat-icon">📍</span><span class="cat-title">Géographie & Accès</span><span class="cat-arrow">▼</span>
     </div>
-    <div class="cat-body open">
+    <div class="cat-body">
       <div class="kv"><span class="label">Population</span><span class="value">{{ "{:,}".format(d.geo.population or 0).replace(",", "\u202f") }} hab.</span></div>
       <div class="kv"><span class="label">Surface</span><span class="value">{{ d.geo.surface or '?' }} ha</span></div>
       <div class="kv"><span class="label">Lyon Part-Dieu (voiture)</span><span class="value">{{ d.distance.distance_km }} km · {{ d.distance.duree_min|int }} min</span></div>
@@ -377,10 +377,10 @@ TEMPLATE = """<!DOCTYPE html>
 
   <!-- ══ 2. IMMOBILIER ══ -->
   <div class="cat">
-    <div class="cat-header open" onclick="toggle(this)">
+    <div class="cat-header" onclick="toggle(this)">
       <span class="cat-icon">🏠</span><span class="cat-title">Immobilier (DVF 2022–2025)</span><span class="cat-arrow">▼</span>
     </div>
-    <div class="cat-body open">
+    <div class="cat-body">
       <div class="kv" style="margin-bottom:6px">
         <span class="label">Médian global</span>
         <span class="value"><strong>{{ d.dvf.global_median_m2|int }} €/m²</strong> · {{ d.dvf.total_habitation }} transactions</span>
@@ -419,10 +419,10 @@ TEMPLATE = """<!DOCTYPE html>
 
   <!-- ══ 3. ÉDUCATION ══ -->
   <div class="cat">
-    <div class="cat-header open" onclick="toggle(this)">
+    <div class="cat-header" onclick="toggle(this)">
       <span class="cat-icon">🏫</span><span class="cat-title">Éducation</span><span class="cat-arrow">▼</span>
     </div>
-    <div class="cat-body open">
+    <div class="cat-body">
       <div style="font-size:0.7rem;color:#aaa;margin-bottom:8px">IPS moy. nationale ≈ 100. VA bac = valeur ajoutée vs établissements similaires.</div>
       <div style="font-size:0.74rem;font-weight:700;color:#0f3460;margin-bottom:6px;padding:3px 8px;background:#e8f0fe;border-radius:4px">
         📍 Dans {{ d.commune_name }} ({{ d.schools_count_in }})
@@ -476,10 +476,10 @@ TEMPLATE = """<!DOCTYPE html>
 
   <!-- ══ 4. SANTÉ & SERVICES ══ -->
   <div class="cat">
-    <div class="cat-header open" onclick="toggle(this)">
+    <div class="cat-header" onclick="toggle(this)">
       <span class="cat-icon">🏥</span><span class="cat-title">Santé & Services de proximité</span><span class="cat-arrow">▼</span>
     </div>
-    <div class="cat-body open">
+    <div class="cat-body">
       {% if d.medecins %}
       <div class="section-title">Professionnels de santé (SIRENE)</div>
       <div class="chips">
@@ -799,14 +799,21 @@ def load_data(commune: str) -> dict:
 
 @app.route("/")
 def index():
-    slugs = {c: to_slug(c) for c in COMMUNES}
+    # All collected communes from data dir, sorted by most recently collected
+    all_communes = []
+    if DATA_DIR.exists():
+        for d in sorted(DATA_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if d.is_dir() and (d / "geo.json").exists():
+                all_communes.append(d.name)
+
+    slugs = {c: to_slug(c) for c in all_communes}
     pops, dists = {}, {}
-    for c in COMMUNES:
+    for c in all_communes:
         geo = json.loads((DATA_DIR / c / "geo.json").read_text()) if (DATA_DIR / c / "geo.json").exists() else {}
         dist = json.loads((DATA_DIR / c / "distance_lyon.json").read_text()) if (DATA_DIR / c / "distance_lyon.json").exists() else {}
         pops[c] = f"{geo.get('population', 0):,}".replace(",", "\u202f")
         dists[c] = dist.get("distance_km", "?")
-    return render_template_string(TEMPLATE_HOME, communes=COMMUNES, slugs=slugs, pops=pops, dists=dists)
+    return render_template_string(TEMPLATE_HOME, communes=all_communes, slugs=slugs, pops=pops, dists=dists)
 
 
 @app.route("/commune/<slug>")
