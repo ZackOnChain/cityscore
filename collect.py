@@ -845,6 +845,59 @@ def fetch_fibre(name: str, info: dict):
     })
 
 
+# Services essentiels BPE (présence = 1 point)
+BPE_ESSENTIAL = {
+    "A129": "Boulangerie / pâtisserie",
+    "B302": "Supermarché",
+    "B303": "Hypermarché",
+    "C107": "Bureau de poste",
+    "C109": "Relais poste",
+    "D265": "Chirurgien-dentiste",
+    "D277": "Pharmacie",
+    "F103": "Cinéma",
+    "F111": "Bibliothèque / médiathèque",
+}
+
+
+def fetch_bpe(name: str, info: dict):
+    """Équipements du quotidien via BPE INSEE (Melodi API)."""
+    params = {
+        "GEO": f"2023-COM-{info['code']}",
+        "BPE_MEASURE": "FACILITIES",
+        "maxResult": 200,
+    }
+    data = get("https://api.insee.fr/melodi/data/DS_BPE", params=params)
+    if not data:
+        print(f"  ✗ BPE: pas de données pour {name}")
+        return
+
+    # Aggregate by FACILITY_TYPE (keep latest TIME_PERIOD)
+    types: dict = {}
+    for obs in data.get("observations", []):
+        ft = obs.get("dimensions", {}).get("FACILITY_TYPE", "")
+        val = obs.get("measures", {}).get("OBS_VALUE_NIVEAU", {}).get("value", 0) or 0
+        if ft and ft != "_T":
+            types[ft] = types.get(ft, 0) + val
+
+    # Score: presence of each essential service
+    services_presents = []
+    for code, label in BPE_ESSENTIAL.items():
+        count = int(types.get(code, 0))
+        if count > 0:
+            services_presents.append({"code": code, "label": label, "count": count})
+
+    score_bpe = round(len(services_presents) / len(BPE_ESSENTIAL) * 100)
+    save(name, "bpe", {
+        "score_presence": score_bpe,
+        "nb_present": len(services_presents),
+        "nb_total": len(BPE_ESSENTIAL),
+        "services": services_presents,
+        "all_types": types,
+        "source": "INSEE BPE via Melodi API",
+    })
+    print(f"  ✓ bpe ({len(services_presents)}/{len(BPE_ESSENTIAL)} services essentiels)")
+
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def print_summary(name: str):
@@ -925,6 +978,7 @@ def main():
         fetch_logements_rp(name, info)
         fetch_qualite_air(name, info)
         fetch_fibre(name, info)
+        fetch_bpe(name, info)
         time.sleep(0.5)
 
     print("\n" + "="*55)
@@ -956,6 +1010,7 @@ def collect_commune(name: str, info: dict):
     fetch_logements_rp(name, info)
     fetch_qualite_air(name, info)
     fetch_fibre(name, info)
+    fetch_bpe(name, info)
 
 
 if __name__ == "__main__":

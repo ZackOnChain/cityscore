@@ -535,6 +535,15 @@ TEMPLATE = """<!DOCTYPE html>
       <div style="font-size:0.72rem;color:#666;margin-top:6px">Généralistes : {{ d.medecins.generalistes_noms[:5] | join(', ') }}{% if d.medecins.generalistes_noms|length > 5 %} <em>+{{ d.medecins.generalistes_noms|length - 5 }} autres</em>{% endif %}</div>
       {% endif %}
       {% endif %}
+      {% if d.bpe %}
+      <div class="section-title" style="margin-top:10px">Services essentiels (BPE INSEE 2024)</div>
+      <div style="font-size:0.72rem;color:#aaa;margin-bottom:6px">{{ d.bpe.nb_present }}/{{ d.bpe.nb_total }} types de services présents dans la commune</div>
+      <div class="chips">
+        {% for svc in d.bpe.services %}
+        <div class="chip"><span>{{ svc.label }}</span><span class="num">{{ svc.count }}</span></div>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if d.commerces %}
       <div class="section-title" style="margin-top:10px">Commerces & équipements (OpenStreetMap, ~4km)</div>
       <div class="chips">
@@ -827,6 +836,9 @@ def load_data(commune: str) -> dict:
     # Fibre optique (ARCEP)
     out["fibre"] = load_json("fibre")
 
+    # BPE équipements du quotidien
+    out["bpe"] = load_json("bpe")
+
     # Logements RP (Melodi INSEE census 2022)
     out["logements_rp"] = load_json("logements_rp")
 
@@ -1024,7 +1036,7 @@ def compute_cityscore(d: dict) -> dict:
     else:
         scores["securite"] = None
 
-    # ── Services : médecins/hab (40%) + gare (25%) + diversité soins (35%) ──
+    # ── Services : médecins/hab (35%) + gare (20%) + BPE équipements (45%) ──
     pop = (d.get("geo") or {}).get("population") or 1
     med_par_type = (d.get("medecins") or {}).get("par_type") or {}
     gen = med_par_type.get("Médecin généraliste", 0)
@@ -1033,12 +1045,14 @@ def compute_cityscore(d: dict) -> dict:
     gares = d.get("gares") or []
     gare_dist = gares[0].get("distance_km", 50) if gares else 50
     gare_sc = max(0, min(100, (30 - gare_dist) / 30 * 100))
-    # Diversité soins: nb de types de praticiens présents parmi: dentiste, kiné, infirmier, labo
-    _SOINS_TYPES = ["Chirurgien-dentiste", "Kinésithérapeute / rééducation",
-                    "Infirmier", "Laboratoire / technicien médical"]
-    nb_soins = sum(1 for t in _SOINS_TYPES if med_par_type.get(t, 0) > 0)
-    soins_sc = nb_soins / len(_SOINS_TYPES) * 100
-    scores["services"] = round(gen_sc * 0.40 + gare_sc * 0.25 + soins_sc * 0.35)
+    # BPE: % services essentiels présents (boulangerie, supermarché, pharmacie, poste, cinéma...)
+    bpe_sc = (d.get("bpe") or {}).get("score_presence")
+    sub_svc = [(s, w) for s, w in [(gen_sc, 0.35), (gare_sc, 0.20), (bpe_sc, 0.45)] if s is not None]
+    if sub_svc:
+        tw = sum(w for _, w in sub_svc)
+        scores["services"] = round(sum(s * w for s, w in sub_svc) / tw)
+    else:
+        scores["services"] = None
 
     # ── Cadre de vie : air + fibre + risques pondérés ───────────────────────
     sub = []
