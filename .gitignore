@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Data collectée (générée automatiquement)
+data/
+
+# IDE
+.vscode/
+.idea/
