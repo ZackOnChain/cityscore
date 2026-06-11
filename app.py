@@ -900,24 +900,52 @@ def compute_cityscore(d: dict) -> dict:
     else:
         scores["immobilier"] = None
 
-    # ── Éducation : IPS moyen + taux DNB ────────────────────────────────────
-    schools = (d.get("schools_in") or []) + (d.get("schools_out") or [])
-    ips_vals = [s["ips"] for s in schools if s.get("ips")]
+    # ── Éducation : IPS (40%) + taux DNB (25%) + mentions (25%) + densité (10%) ─
+    schools_in  = d.get("schools_in") or []
+    schools_out = d.get("schools_out") or []
+
     def _parse_pct(v):
         try:
             return float(str(v).replace("%", "").replace(",", "."))
         except Exception:
             return None
-    dnb_raw = [_parse_pct(s["dnb"]["taux"]) for s in schools if s.get("dnb") and (s["dnb"] or {}).get("taux")]
-    dnb_vals = [v for v in dnb_raw if v is not None]
-    ips_sc = max(0, min(100, (sum(ips_vals) / len(ips_vals) - 50) / 120 * 100)) if ips_vals else None
+
+    # Use in-commune schools for quality metrics; fall back to all if none have data
+    def _dnb_schools(pool):
+        return [s for s in pool if s.get("dnb") and s["dnb"]]
+
+    quality_pool = _dnb_schools(schools_in) or _dnb_schools(schools_in + schools_out)
+    ips_pool = [s for s in (schools_in or (schools_in + schools_out)) if s.get("ips")]
+
+    ips_vals = [s["ips"] for s in ips_pool]
+    # IPS centré sur 100 (moyenne nationale publique) : 100=50pts, 155=100pts, 60=0pts
+    ips_sc = max(0, min(100, 50 + (sum(ips_vals) / len(ips_vals) - 100) / 55 * 50)) if ips_vals else None
+
+    dnb_vals = [v for v in [_parse_pct((s["dnb"] or {}).get("taux")) for s in quality_pool] if v is not None]
+    # taux DNB: 50%=0pts, 100%=100pts
     dnb_sc = max(0, min(100, (sum(dnb_vals) / len(dnb_vals) - 50) / 50 * 100)) if dnb_vals else None
-    if ips_sc is not None and dnb_sc is not None:
-        scores["education"] = round(ips_sc * 0.6 + dnb_sc * 0.4)
-    elif ips_sc is not None:
-        scores["education"] = round(ips_sc)
-    elif dnb_sc is not None:
-        scores["education"] = round(dnb_sc)
+
+    # Taux mentions bien + très bien sur les écoles IN seulement
+    mention_rates = []
+    for s in quality_pool:
+        dnb = s["dnb"] or {}
+        admis = dnb.get("admis") or 0
+        bien = (dnb.get("mentions_bien") or 0) + (dnb.get("mentions_tb") or 0)
+        if admis > 0:
+            mention_rates.append(bien / admis * 100)
+    # 20% mentions = 0pts, 60% = 100pts
+    mention_sc = max(0, min(100, (sum(mention_rates) / len(mention_rates) - 20) / 40 * 100)) if mention_rates else None
+
+    # Densité scolaire : nb écoles dans la commune / 1000 habitants
+    pop = (d.get("geo") or {}).get("population") or 1
+    density = len(schools_in) / pop * 1000
+    # 0.3/1000 = 0pts, 1.5/1000 = 100pts
+    density_sc = max(0, min(100, (density - 0.3) / 1.2 * 100))
+
+    sub_edu = [(s, w) for s, w in [(ips_sc, 0.4), (dnb_sc, 0.25), (mention_sc, 0.25), (density_sc, 0.1)] if s is not None]
+    if sub_edu:
+        tw = sum(w for _, w in sub_edu)
+        scores["education"] = round(sum(s * w for s, w in sub_edu) / tw)
     else:
         scores["education"] = None
 
