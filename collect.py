@@ -845,6 +845,78 @@ def fetch_fibre(name: str, info: dict):
     })
 
 
+_filosofi_cache: dict | None = None
+FILOSOFI_URL = (
+    "https://www.insee.fr/fr/statistiques/fichier/7756729/base-cc-filosofi-2021-geo2025_csv.zip"
+)
+FILOSOFI_MEASURES = {
+    "MED_SL": "revenu_median",
+    "PR_MD60": "taux_pauvrete",
+    "D1_SL": "d1_niveau_vie",
+    "D9_SL": "d9_niveau_vie",
+}
+
+
+def _load_filosofi() -> dict:
+    """Télécharge et indexe le fichier FiLoSoFi 2021 commune par code INSEE (une seule fois)."""
+    global _filosofi_cache
+    if _filosofi_cache is not None:
+        return _filosofi_cache
+
+    print("  ↓ Téléchargement FiLoSoFi 2021 (~5 Mo)...")
+    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+    try:
+        r = S.get(FILOSOFI_URL, headers=headers, timeout=60)
+        if not r.ok:
+            print(f"  ✗ FiLoSoFi: HTTP {r.status_code}")
+            _filosofi_cache = {}
+            return _filosofi_cache
+    except Exception as e:
+        print(f"  ✗ FiLoSoFi: {e.__class__.__name__}")
+        _filosofi_cache = {}
+        return _filosofi_cache
+
+    import csv, io, zipfile
+    index: dict = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            # Find the data CSV (not metadata)
+            data_file = next(f for f in z.namelist() if "data" in f.lower() and "meta" not in f.lower())
+            with z.open(data_file) as f:
+                reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"), delimiter=";")
+                for row in reader:
+                    code = row.get("GEO", "")
+                    measure = row.get("FILOSOFI_MEASURE", "")
+                    conf = row.get("CONF_STATUS", "")
+                    val_str = row.get("OBS_VALUE", "")
+                    if measure not in FILOSOFI_MEASURES or conf == "C" or not val_str:
+                        continue
+                    if code not in index:
+                        index[code] = {}
+                    try:
+                        index[code][FILOSOFI_MEASURES[measure]] = float(val_str)
+                    except ValueError:
+                        pass
+    except Exception as e:
+        print(f"  ✗ FiLoSoFi parse: {e}")
+        _filosofi_cache = {}
+        return _filosofi_cache
+
+    _filosofi_cache = index
+    print(f"  ✓ FiLoSoFi chargé ({len(index)} communes)")
+    return _filosofi_cache
+
+
+def fetch_filosofi(name: str, info: dict):
+    """Revenus et pauvreté par commune (FiLoSoFi 2021, INSEE)."""
+    index = _load_filosofi()
+    data = index.get(info["code"])
+    if not data:
+        print(f"  ✗ FiLoSoFi: {info['code']} non trouvé")
+        return
+    save(name, "filosofi", {**data, "annee": 2021, "source": "INSEE FiLoSoFi 2021"})
+
+
 # Services essentiels BPE (présence = 1 point)
 BPE_ESSENTIAL = {
     "A129": "Boulangerie / pâtisserie",
@@ -979,6 +1051,7 @@ def main():
         fetch_qualite_air(name, info)
         fetch_fibre(name, info)
         fetch_bpe(name, info)
+        fetch_filosofi(name, info)
         time.sleep(0.5)
 
     print("\n" + "="*55)
@@ -1011,6 +1084,7 @@ def collect_commune(name: str, info: dict):
     fetch_qualite_air(name, info)
     fetch_fibre(name, info)
     fetch_bpe(name, info)
+    fetch_filosofi(name, info)
 
 
 if __name__ == "__main__":

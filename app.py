@@ -458,6 +458,14 @@ TEMPLATE = """<!DOCTYPE html>
         <div class="kv"><span class="label">Occupés / Vacants</span><span class="value">{{ d.hlm.loges }} / {{ d.hlm.vacants }}</span></div>
       </div>
       {% endif %}
+      {% if d.filosofi %}
+      <div class="section" style="margin-top:10px">
+        <div class="section-title">Revenus des ménages (FiLoSoFi 2021, INSEE)</div>
+        <div class="kv"><span class="label">Revenu médian</span><span class="value"><strong>{{ "{:,.0f}".format(d.filosofi.revenu_median).replace(",", " ") }} €/an</strong></span></div>
+        {% if d.filosofi.taux_pauvrete %}<div class="kv"><span class="label">Taux de pauvreté</span><span class="value"><span class="badge {{ 'badge-green' if d.filosofi.taux_pauvrete < 10 else ('badge-orange' if d.filosofi.taux_pauvrete < 20 else 'badge-red') }}">{{ d.filosofi.taux_pauvrete }}%</span></span></div>{% endif %}
+        {% if d.dvf.global_median_m2 and d.filosofi.revenu_median %}<div class="kv"><span class="label">Ratio prix / revenu</span><span class="value">{{ ((d.dvf.global_median_m2 * 60) / d.filosofi.revenu_median)|round(1) }} ans de revenu pour 60 m²</span></div>{% endif %}
+      </div>
+      {% endif %}
     </div>
   </div>
 
@@ -839,6 +847,9 @@ def load_data(commune: str) -> dict:
     # BPE équipements du quotidien
     out["bpe"] = load_json("bpe")
 
+    # FiLoSoFi — revenus et pauvreté (INSEE 2021)
+    out["filosofi"] = load_json("filosofi")
+
     # Logements RP (Melodi INSEE census 2022)
     out["logements_rp"] = load_json("logements_rp")
 
@@ -889,18 +900,26 @@ def compute_cityscore(d: dict) -> dict:
                 evol_score = max(0, 60 + ep * 4)            # decline → 0-60
 
     median_m2 = dvf.get("global_median_m2")
+    revenu_median = (d.get("filosofi") or {}).get("revenu_median")
     prix_score = None
     if median_m2:
-        if median_m2 < 1500:
-            prix_score = 20
-        elif median_m2 <= 3000:
-            prix_score = 60 + (median_m2 - 1500) / 1500 * 40
-        elif median_m2 <= 5000:
-            prix_score = 100
-        elif median_m2 <= 7000:
-            prix_score = max(40, 100 - (median_m2 - 5000) / 2000 * 60)
+        if revenu_median:
+            # Ratio prix/revenu : nb d'années de revenu médian pour acheter 60m²
+            # 3 ans = 100pts (très accessible), 8 ans = 50pts, 15+ ans = 0pts
+            ratio = (median_m2 * 60) / revenu_median
+            prix_score = max(0, min(100, (15 - ratio) / 12 * 100))
         else:
-            prix_score = 20
+            # Fallback sur prix absolu si FiLoSoFi non disponible
+            if median_m2 < 1500:
+                prix_score = 20
+            elif median_m2 <= 3000:
+                prix_score = 60 + (median_m2 - 1500) / 1500 * 40
+            elif median_m2 <= 5000:
+                prix_score = 100
+            elif median_m2 <= 7000:
+                prix_score = max(40, 100 - (median_m2 - 5000) / 2000 * 60)
+            else:
+                prix_score = 20
 
     # HLM: 0% = 100pts, ≥40% = 0pts (adouci vs v1 qui pénalisait à 30%)
     hlm_taux = d.get("hlm_taux_pct")
